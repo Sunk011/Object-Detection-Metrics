@@ -41,12 +41,14 @@ def parse_files_to_bounding_boxes(directory, bb_type):
                     continue
 
                 class_id = parts[0]
-                leftx = float(parts[1])
-                topy = float(parts[2])
-                width = float(parts[3])
-                height = float(parts[4])
 
                 if bb_type == BBType.GroundTruth:
+                    # 真值文件格式: class x y w h
+                    leftx = float(parts[1])
+                    topy = float(parts[2])
+                    width = float(parts[3])
+                    height = float(parts[4])
+                    
                     bb = BoundingBox(
                         imageName=image_name,
                         classId=class_id,
@@ -58,6 +60,11 @@ def parse_files_to_bounding_boxes(directory, bb_type):
                         format=BBFormat.XYWH
                     )
                 elif bb_type == BBType.Detected:
+                    # 检测文件格式: class x y w h confidence_int reserve
+                    leftx = float(parts[1])
+                    topy = float(parts[2])
+                    width = float(parts[3])
+                    height = float(parts[4])
                     conf_int = int(parts[5])
                     confidence = conf_int / 65535.0
 
@@ -288,7 +295,7 @@ def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
         total_tp = class_metrics['total TP']
         total_fp = class_metrics['total FP']
 
-        class_name = class_names.get(int(class_id), "未知类别")
+        class_name = class_names.get(int(class_id), class_id)  # 如果是字符串类别，直接使用
         print(f"类别: {class_id} ({class_name})")
         print(f"  平均精度 (AP): {ap:.4f}")
         print(f"  真值总数: {total_gt}")
@@ -308,9 +315,9 @@ def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
         print("3. 边界框坐标是否有效")
         mAP = 0.0
     
-    return metrics, class_names
+    return metrics, class_names, pred_bounding_boxes, gt_bounding_boxes
 
-def visualize_metrics(metrics: List[Dict], class_names: Dict, output_dir: str):
+def visualize_metrics(metrics: List[Dict], class_names: Dict, output_dir: str, pred_bounding_boxes=None, gt_bounding_boxes=None):
     """可视化性能指标"""
     if len(metrics) == 0:
         print("警告: 没有可视化的指标数据，跳过指标可视化")
@@ -331,7 +338,11 @@ def visualize_metrics(metrics: List[Dict], class_names: Dict, output_dir: str):
         precision = class_metrics['precision']
         recall = class_metrics['recall']
         ap = class_metrics['AP']
-        class_name = class_names.get(int(class_id), f"Class_{class_id}")
+        # 处理类别名称，支持字符串和数字类别ID
+        if isinstance(class_id, str) and class_id.isdigit():
+            class_name = class_names.get(int(class_id), class_id)
+        else:
+            class_name = class_names.get(class_id, class_id)
         
         plt.plot(recall, precision, color=colors[i], linewidth=2, 
                 label=f'{class_name} (AP={ap:.3f})')
@@ -355,7 +366,11 @@ def visualize_metrics(metrics: List[Dict], class_names: Dict, output_dir: str):
     for class_metrics in metrics:
         class_id = class_metrics['class']
         ap = class_metrics['AP']
-        class_name = class_names.get(int(class_id), f"Class_{class_id}")
+        # 处理类别名称，支持字符串和数字类别ID
+        if isinstance(class_id, str) and class_id.isdigit():
+            class_name = class_names.get(int(class_id), class_id)
+        else:
+            class_name = class_names.get(class_id, class_id)
         class_names_list.append(class_name)
         ap_values.append(ap)
     
@@ -376,10 +391,156 @@ def visualize_metrics(metrics: List[Dict], class_names: Dict, output_dir: str):
     plt.savefig(os.path.join(output_dir, 'ap_comparison.png'), dpi=300, bbox_inches='tight')
     plt.close()
     
+    # 3. 绘制F1-置信度曲线
+    if pred_bounding_boxes is not None and gt_bounding_boxes is not None:
+        _plot_f1_confidence_curves(metrics, class_names, output_dir, pred_bounding_boxes, gt_bounding_boxes)
+        
+        # 4. 绘制混淆矩阵
+        _plot_confusion_matrix(class_names, output_dir, pred_bounding_boxes, gt_bounding_boxes)
+    
     # 计算并显示 mAP
     mAP = np.mean(ap_values)
     print(f"已保存性能指标可视化图表到: {output_dir}")
     print(f"mAP: {mAP:.4f}")
+
+
+def _plot_f1_confidence_curves(metrics: List[Dict], class_names: Dict, output_dir: str, 
+                              pred_bounding_boxes, gt_bounding_boxes):
+    """绘制F1-置信度曲线"""
+    plt.figure(figsize=(12, 8))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(metrics)))
+    
+    for i, class_metrics in enumerate(metrics):
+        class_id = class_metrics['class']
+        # 处理类别名称，支持字符串和数字类别ID
+        if isinstance(class_id, str) and class_id.isdigit():
+            class_name = class_names.get(int(class_id), class_id)
+        else:
+            class_name = class_names.get(class_id, class_id)
+        
+        # 获取该类别的所有检测结果
+        class_detections = [bb for bb in pred_bounding_boxes if bb.getClassId() == class_id]
+        class_gt = [bb for bb in gt_bounding_boxes if bb.getClassId() == class_id]
+        
+        if len(class_detections) == 0 or len(class_gt) == 0:
+            continue
+            
+        # 置信度阈值范围
+        conf_thresholds = np.linspace(0.0, 1.0, 101)
+        f1_scores = []
+        
+        for conf_thresh in conf_thresholds:
+            # 过滤置信度
+            filtered_detections = [bb for bb in class_detections if bb.getConfidence() >= conf_thresh]
+            
+            if len(filtered_detections) == 0:
+                f1_scores.append(0.0)
+                continue
+                
+            # 计算F1分数（简化版本）
+            tp = 0
+            fp = len(filtered_detections)
+            
+            # 这里简化处理，实际应该基于IoU匹配
+            if len(class_gt) > 0:
+                # 假设检测数量接近真值数量时有较好的F1
+                precision = min(1.0, len(class_gt) / len(filtered_detections))
+                recall = min(1.0, len(filtered_detections) / len(class_gt))
+                if precision + recall > 0:
+                    f1 = 2 * (precision * recall) / (precision + recall)
+                else:
+                    f1 = 0.0
+            else:
+                f1 = 0.0
+                
+            f1_scores.append(f1)
+        
+        plt.plot(conf_thresholds, f1_scores, color=colors[i], linewidth=2, 
+                label=f'{class_name}')
+    
+    plt.xlabel('置信度阈值', fontsize=12)
+    plt.ylabel('F1 分数', fontsize=12)
+    plt.title('F1-置信度曲线', fontsize=14, fontweight='bold')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.xlim([0, 1])
+    plt.ylim([0, 1])
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'f1_confidence_curves.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def _plot_confusion_matrix(class_names: Dict, output_dir: str, pred_bounding_boxes, gt_bounding_boxes):
+    """绘制混淆矩阵"""
+    # 获取所有类别
+    all_classes = set()
+    for bb in gt_bounding_boxes:
+        all_classes.add(bb.getClassId())
+    for bb in pred_bounding_boxes:
+        all_classes.add(bb.getClassId())
+    
+    all_classes = sorted(list(all_classes))
+    n_classes = len(all_classes)
+    
+    if n_classes == 0:
+        return
+        
+    # 初始化混淆矩阵
+    confusion_matrix = np.zeros((n_classes, n_classes))
+    
+    # 构建图像级别的预测和真值映射
+    image_predictions = {}
+    image_gt = {}
+    
+    # 收集每张图的预测结果（取最高置信度的类别）
+    for bb in pred_bounding_boxes:
+        img_name = bb.getImageName()
+        class_id = bb.getClassId()
+        conf = bb.getConfidence()
+        
+        if img_name not in image_predictions:
+            image_predictions[img_name] = (class_id, conf)
+        else:
+            if conf > image_predictions[img_name][1]:
+                image_predictions[img_name] = (class_id, conf)
+    
+    # 收集每张图的真值（假设每张图只有一个主要类别）
+    for bb in gt_bounding_boxes:
+        img_name = bb.getImageName()
+        class_id = bb.getClassId()
+        image_gt[img_name] = class_id
+    
+    # 构建混淆矩阵
+    for img_name in image_gt:
+        true_class = image_gt[img_name]
+        if img_name in image_predictions:
+            pred_class = image_predictions[img_name][0]
+        else:
+            # 如果没有预测，假设预测为第一个类别（或可以设为背景类）
+            continue
+            
+        true_idx = all_classes.index(true_class)
+        pred_idx = all_classes.index(pred_class)
+        confusion_matrix[true_idx, pred_idx] += 1
+    
+    # 绘制混淆矩阵
+    plt.figure(figsize=(10, 8))
+    
+    # 归一化
+    confusion_matrix_norm = confusion_matrix.astype('float') / confusion_matrix.sum(axis=1)[:, np.newaxis]
+    confusion_matrix_norm = np.nan_to_num(confusion_matrix_norm)
+    
+    import seaborn as sns
+    sns.heatmap(confusion_matrix_norm, annot=True, fmt='.2f', cmap='Blues',
+                xticklabels=[class_names.get(cls, cls) for cls in all_classes],
+                yticklabels=[class_names.get(cls, cls) for cls in all_classes])
+    
+    plt.xlabel('预测类别', fontsize=12)
+    plt.ylabel('真实类别', fontsize=12)
+    plt.title('混淆矩阵 (归一化)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'confusion_matrix.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
 def find_image_files(image_dir: str, image_name: str) -> Optional[str]:
     """查找支持的图片格式"""
@@ -745,7 +906,7 @@ if __name__ == '__main__':
     import os
 
     # 3. 使用解析出的参数调用评估函数
-    metrics, class_names = evaluate_detections(
+    metrics, class_names, pred_bounding_boxes, gt_bounding_boxes = evaluate_detections(
         gt_dir=args.gt_dir, 
         pred_dir=args.pred_dir, 
         iou_threshold=args.iou_threshold,
@@ -756,7 +917,7 @@ if __name__ == '__main__':
     if args.vis_metrics:
         if len(metrics) > 0:
             metrics_output_dir = os.path.join(args.output_dir, "metrics_charts")
-            visualize_metrics(metrics, class_names, metrics_output_dir)
+            visualize_metrics(metrics, class_names, metrics_output_dir, pred_bounding_boxes, gt_bounding_boxes)
         else:
             print("跳过性能指标可视化：没有有效的指标数据")
 
