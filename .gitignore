@@ -1,6 +1,14 @@
 assets/
 tmp/
 
+
+detections/
+detections_rel/
+groundtruths/
+groundtruths_rel/
+samples/
+
+
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
