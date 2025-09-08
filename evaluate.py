@@ -87,7 +87,7 @@ def parse_files_to_bounding_boxes(directory, bb_type):
     return bounding_boxes
 
 
-def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
+def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None, output_txt_path=None):
     """
     使用 object-detection-metrics 库对自定义格式的检测结果进行评估。
 
@@ -96,6 +96,7 @@ def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
         pred_dir (str): 存放模型预测结果文件的目录路径。
         iou_threshold (float): 用于判断TP/FP的IoU阈值。
         classes_file (str): 存放类别名称的文件路径。
+        output_txt_path (str): 保存评估结果的txt文件路径。
     """
     print("正在加载真值标注...")
     gt_bounding_boxes = parse_files_to_bounding_boxes(gt_dir, BBType.GroundTruth)
@@ -124,10 +125,18 @@ def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
             for idx, line in enumerate(f):
                 class_names[idx] = line.strip()
 
-    print("\n" + "=" * 60)
-    print("目标检测性能评估结果 (使用 PASCAL VOC Metrics)")
-    print("=" * 60)
-    print(f"IoU 阈值: {iou_threshold}")
+    # 准备输出内容列表
+    output_lines = []
+    
+    def add_output(text):
+        """同时输出到控制台和列表"""
+        print(text)
+        output_lines.append(text)
+
+    add_output("\n" + "=" * 60)
+    add_output("目标检测性能评估结果 (使用 PASCAL VOC Metrics)")
+    add_output("=" * 60)
+    add_output(f"IoU 阈值: {iou_threshold}")
 
     # 打印每个类别的评估结果
     total_precision_sum = 0.0
@@ -153,21 +162,21 @@ def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
             class_name = class_names.get(int(class_id), class_id)
         else:
             class_name = class_names.get(class_id, class_id)
-        print(f"类别: {class_id} ({class_name})")
-        print(f"  平均精度 (AP): {ap:.4f}")
-        print(f"  查准率 (Precision): {precision:.4f}")
-        print(f"  查全率 (Recall): {recall:.4f}")
-        print(f"  F1分数: {f1_score:.4f}")
-        print(f"  真值总数: {total_gt}")
-        print(f"  真正例 (TP): {total_tp}")
-        print(f"  假正例 (FP): {total_fp}")
+        add_output(f"类别: {class_id} ({class_name})")
+        add_output(f"  平均精度 (AP): {ap:.4f}")
+        add_output(f"  查准率 (Precision): {precision:.4f}")
+        add_output(f"  查全率 (Recall): {recall:.4f}")
+        add_output(f"  F1分数: {f1_score:.4f}")
+        add_output(f"  真值总数: {total_gt}")
+        add_output(f"  真正例 (TP): {total_tp}")
+        add_output(f"  假正例 (FP): {total_fp}")
         
         # 累加用于计算平均值
         total_precision_sum += precision
         total_recall_sum += recall
         valid_classes += 1
         
-        print("-" * 60)
+        add_output("-" * 60)
 
     # 计算并打印 mAP 和其他平均指标
     if len(metrics) > 0:
@@ -176,19 +185,33 @@ def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
         mean_recall = total_recall_sum / valid_classes if valid_classes > 0 else 0.0
         mean_f1 = 2 * (mean_precision * mean_recall) / (mean_precision + mean_recall) if (mean_precision + mean_recall) > 0 else 0.0
         
-        print(f"\n总体性能指标:")
-        print(f"  mAP (平均精度均值): {mAP:.4f}")
-        print(f"  平均查准率: {mean_precision:.4f}")
-        print(f"  平均查全率: {mean_recall:.4f}")
-        print(f"  平均F1分数: {mean_f1:.4f}")
-        print()
+        add_output(f"\n总体性能指标:")
+        add_output(f"  mAP (平均精度均值): {mAP:.4f}")
+        add_output(f"  平均查准率: {mean_precision:.4f}")
+        add_output(f"  平均查全率: {mean_recall:.4f}")
+        add_output(f"  平均F1分数: {mean_f1:.4f}")
+        add_output("")
     else:
-        print("\n警告: 没有找到任何有效的类别指标，无法计算mAP")
-        print("请检查:")
-        print("1. 真值标注文件和检测结果文件是否存在且格式正确")
-        print("2. 类别ID是否匹配")
-        print("3. 边界框坐标是否有效")
+        add_output("\n警告: 没有找到任何有效的类别指标，无法计算mAP")
+        add_output("请检查:")
+        add_output("1. 真值标注文件和检测结果文件是否存在且格式正确")
+        add_output("2. 类别ID是否匹配")
+        add_output("3. 边界框坐标是否有效")
         mAP = 0.0
+    
+    # 保存输出到文件
+    if output_txt_path:
+        try:
+            # 确保输出目录存在
+            output_dir = os.path.dirname(output_txt_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            
+            with open(output_txt_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(output_lines))
+            print(f"评估结果已保存到: {output_txt_path}")
+        except Exception as e:
+            print(f"保存评估结果到文件时出错: {e}")
     
     return metrics, class_names, pred_bounding_boxes, gt_bounding_boxes
 
@@ -740,6 +763,12 @@ if __name__ == '__main__':
         help='存放类别名称的文件路径。'
     )
     parser.add_argument(
+        '--output_txt', 
+        type=str, 
+        required=False, 
+        help='保存评估结果的txt文件路径。如果不指定，则只输出到控制台。'
+    )
+    parser.add_argument(
         '--visualize', 
         action='store_true',
         help='是否进行可视化，保存带有边界框的图片。'
@@ -785,7 +814,8 @@ if __name__ == '__main__':
         gt_dir=args.gt_dir, 
         pred_dir=args.pred_dir, 
         iou_threshold=args.iou_threshold,
-        classes_file=args.classes_file
+        classes_file=args.classes_file,
+        output_txt_path=args.output_txt
     )
 
     # 4. 可选的性能指标可视化
