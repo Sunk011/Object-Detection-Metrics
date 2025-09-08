@@ -86,164 +86,6 @@ def parse_files_to_bounding_boxes(directory, bb_type):
 
     return bounding_boxes
 
-class MMDetVisualizer:
-    """mmdet风格的边界框可视化工具"""
-    
-    def __init__(self, default_color=(255, 0, 0), default_thickness=2, 
-                 mmdet_alpha=0.3, reticle_percent=0.25):
-        self.default_color = default_color
-        self.default_thickness = default_thickness
-        self.mmdet_alpha = mmdet_alpha
-        self.reticle_percent = reticle_percent
-        self.reticle_min_percent = 0.1
-        self.reticle_interpolation_range = 0.4
-    
-    def _get_color(self, color):
-        """转换颜色格式"""
-        if isinstance(color, str):
-            color_map = {
-                'red': (0, 0, 255),
-                'green': (0, 255, 0),
-                'blue': (255, 0, 0),
-                'yellow': (0, 255, 255),
-                'cyan': (255, 255, 0),
-                'magenta': (255, 0, 255)
-            }
-            return color_map.get(color.lower(), (255, 0, 0))
-        return color
-
-    def draw_reticle_box(self, image: np.ndarray, box: Union[List[int], Tuple[int, int, int, int]], 
-                        percent: Optional[float] = None, color: Optional[Union[str, Tuple[int, int, int]]] = None,
-                        thickness: Optional[int] = None) -> np.ndarray:
-        """在图像上绘制瞄准框"""
-        display_image = image.copy()
-        
-        if percent is None:
-            percent = self.reticle_percent
-        if color is None:
-            color = self.default_color
-        else:
-            color = self._get_color(color)
-        if thickness is None:
-            thickness = self.default_thickness
-        
-        # 处理percent值
-        if percent >= 0.5:
-            final_percent = 0.5
-        elif percent < self.reticle_min_percent:
-            final_percent = self.reticle_min_percent
-        else:
-            final_percent = percent
-            
-        x1, y1, x2, y2 = box
-        
-        # 直接绘制完整矩形
-        if final_percent == 0.5:
-            cv2.rectangle(display_image, (x1, y1), (x2, y2), color, thickness)
-            return display_image
-
-        # 动态插值计算线长
-        width = x2 - x1
-        height = y2 - y1
-        
-        # 目标1：按各自边长计算的长度
-        target_len_x1 = width * final_percent
-        target_len_y1 = height * final_percent
-        
-        # 目标2：按短边计算的长度
-        short_side = min(width, height)
-        target_len_short_side = short_side * final_percent
-        
-        # 插值权重计算
-        interpolation_weight = (0.5 - final_percent) / self.reticle_interpolation_range   
-
-        # 最终的线长是两种计算方式的加权平均
-        final_len_x = int((target_len_short_side * interpolation_weight) + 
-                         (target_len_x1 * (1 - interpolation_weight)))
-        final_len_y = int((target_len_short_side * interpolation_weight) + 
-                         (target_len_y1 * (1 - interpolation_weight)))
-        
-        # 绘制8条角线
-        # 左上角
-        cv2.line(display_image, (x1, y1), (x1 + final_len_x, y1), color, thickness)
-        cv2.line(display_image, (x1, y1), (x1, y1 + final_len_y), color, thickness)
-
-        # 右上角
-        cv2.line(display_image, (x2, y1), (x2 - final_len_x, y1), color, thickness)
-        cv2.line(display_image, (x2, y1), (x2, y1 + final_len_y), color, thickness)
-        
-        # 左下角
-        cv2.line(display_image, (x1, y2), (x1 + final_len_x, y2), color, thickness)
-        cv2.line(display_image, (x1, y2), (x1, y2 - final_len_y), color, thickness)
-
-        # 右下角
-        cv2.line(display_image, (x2, y2), (x2 - final_len_x, y2), color, thickness)
-        cv2.line(display_image, (x2, y2), (x2, y2 - final_len_y), color, thickness)
-        
-        return display_image
-
-    def draw_mmbox(self, image: np.ndarray, box: Union[List[int], Tuple[int, int, int, int]],
-                   color: Optional[Union[str, Tuple[int, int, int]]] = None,
-                   thickness: Optional[int] = None, alpha: Optional[float] = None,
-                   class_name: Optional[str] = None, confidence: Optional[float] = None) -> np.ndarray:
-        """以mmdet风格在图像上绘制目标边界框"""
-        # 使用初始化时设置的默认参数
-        if color is None:
-            color = self.default_color
-        else:
-            color = self._get_color(color)
-        
-        if thickness is None:
-            thickness = self.default_thickness
-        if alpha is None:
-            alpha = self.mmdet_alpha
-            
-        # 创建一个用于绘制的覆盖层，与原图大小相同
-        overlay = image.copy()
-        final_image = image.copy() # 用于最终混合
-        x1, y1, x2, y2 = map(int, box)
-        
-        # 1. 在覆盖层上绘制半透明的填充矩形
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-        
-        # 2.绘制类似于瞄准框的检测框
-        final_image = self.draw_reticle_box(final_image, [x1, y1, x2, y2], 
-                                          percent=self.reticle_percent, color=color, thickness=thickness)
-
-        final_image = cv2.addWeighted(overlay, alpha, final_image, 1 - alpha, 0)
-        
-        # 3. 添加标签
-        if class_name is not None or confidence is not None:
-            label = ""
-            if class_name:
-                label += str(class_name)
-            if confidence is not None:
-                label += f" {confidence:.2f}"
-            
-            if label:
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.6
-                font_thickness = 2
-                
-                # 获取文本尺寸
-                (text_width, text_height), baseline = cv2.getTextSize(
-                    label, font, font_scale, font_thickness)
-                
-                # 文本背景矩形
-                text_x = x1
-                text_y = y1 - text_height - 5 if y1 - text_height - 5 > 0 else y1 + text_height + 5
-                
-                # 绘制文本背景
-                cv2.rectangle(final_image, 
-                            (text_x, text_y - text_height - 3), 
-                            (text_x + text_width + 6, text_y + 3), 
-                            color, -1)
-                
-                # 绘制文本
-                cv2.putText(final_image, label, (text_x + 3, text_y), 
-                          font, font_scale, (255, 255, 255), font_thickness)
-
-        return final_image
 
 def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
     """
@@ -288,25 +130,58 @@ def evaluate_detections(gt_dir, pred_dir, iou_threshold=0.5, classes_file=None):
     print(f"IoU 阈值: {iou_threshold}")
 
     # 打印每个类别的评估结果
+    total_precision_sum = 0.0
+    total_recall_sum = 0.0
+    valid_classes = 0
+    
     for class_metrics in metrics:
         class_id = class_metrics['class']
         ap = class_metrics['AP']
         total_gt = class_metrics['total positives']
         total_tp = class_metrics['total TP']
         total_fp = class_metrics['total FP']
+        
+        # 计算查准率和查全率
+        precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
+        recall = total_tp / total_gt if total_gt > 0 else 0.0
+        
+        # 计算F1分数
+        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
-        class_name = class_names.get(int(class_id), class_id)  # 如果是字符串类别，直接使用
+        # 处理类别名称，支持字符串和数字类别ID
+        if isinstance(class_id, str) and class_id.isdigit():
+            class_name = class_names.get(int(class_id), class_id)
+        else:
+            class_name = class_names.get(class_id, class_id)
         print(f"类别: {class_id} ({class_name})")
         print(f"  平均精度 (AP): {ap:.4f}")
+        print(f"  查准率 (Precision): {precision:.4f}")
+        print(f"  查全率 (Recall): {recall:.4f}")
+        print(f"  F1分数: {f1_score:.4f}")
         print(f"  真值总数: {total_gt}")
         print(f"  真正例 (TP): {total_tp}")
         print(f"  假正例 (FP): {total_fp}")
+        
+        # 累加用于计算平均值
+        total_precision_sum += precision
+        total_recall_sum += recall
+        valid_classes += 1
+        
         print("-" * 60)
 
-    # 计算并打印 mAP
+    # 计算并打印 mAP 和其他平均指标
     if len(metrics) > 0:
         mAP = sum([class_metrics['AP'] for class_metrics in metrics]) / len(metrics)
-        print(f"\nmAP: {mAP:.4f}\n")
+        mean_precision = total_precision_sum / valid_classes if valid_classes > 0 else 0.0
+        mean_recall = total_recall_sum / valid_classes if valid_classes > 0 else 0.0
+        mean_f1 = 2 * (mean_precision * mean_recall) / (mean_precision + mean_recall) if (mean_precision + mean_recall) > 0 else 0.0
+        
+        print(f"\n总体性能指标:")
+        print(f"  mAP (平均精度均值): {mAP:.4f}")
+        print(f"  平均查准率: {mean_precision:.4f}")
+        print(f"  平均查全率: {mean_recall:.4f}")
+        print(f"  平均F1分数: {mean_f1:.4f}")
+        print()
     else:
         print("\n警告: 没有找到任何有效的类别指标，无法计算mAP")
         print("请检查:")

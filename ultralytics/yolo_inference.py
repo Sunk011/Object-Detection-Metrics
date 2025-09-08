@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 from ultralytics import YOLO
 from tqdm import tqdm
+import torch
 
 def convert_yolo_results(yolo_results):
     """
@@ -73,6 +74,11 @@ def run_batch_inference(model_weights, image_dir, output_dir):
     # 加载 YOLO 模型
     print(f"正在从 {model_weights} 加载模型...")
     model = YOLO(model_weights)
+    
+    # 根据实际情况判断是否使用 GPU
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model = model.to(device)
+
     print("模型加载成功。")
 
     # 确保输出目录存在
@@ -93,7 +99,7 @@ def run_batch_inference(model_weights, image_dir, output_dir):
     for image_file in tqdm(image_files, desc="正在处理图像"):
         try:
             # 执行推理
-            results = model(image_file, verbose=False) # verbose=False 让日志保持干净
+            results = model(image_file, verbose=True, imgsz=1280) # verbose=False 让日志保持干净
 
             # results 是一个列表，我们处理第一个元素
             # .boxes.data 包含了 [x1, y1, x2, y2, conf, cls] 格式的张量(Tensor)
