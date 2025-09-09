@@ -390,7 +390,7 @@ def main():
     主函数
     """
     parser = argparse.ArgumentParser(description='Object Detection Model Performance Visualization Tool')
-    parser.add_argument('input_dir', help='Directory path containing result txt files')
+    parser.add_argument('input_dir', '', help='Directory path containing result txt files')
     parser.add_argument('output_dir', help='Directory path to save visualization charts')
     
     args = parser.parse_args()
